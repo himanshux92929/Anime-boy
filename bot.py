@@ -78,9 +78,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔍 Search Anime", callback_data="start_search")],
         [InlineKeyboardButton("☁️ About Smarterz", callback_data="about_bot")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='HTML', reply_markup=reply_markup)
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ConversationHandler.END
 
 async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,18 +112,21 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     search_query = update.message.text
     context.user_data['search_query'] = search_query
-    await fetch_and_display_search(update.message.chat_id, context, page=1)
+    context.user_data['anime_map'] = {}   # fresh map for new search
+    await fetch_and_display_search(update.message.chat_id, context, api_page=1)
     return ConversationHandler.END
 
 # -----------------------------------------------------------------------
-# FIX: Replaced the broken success-field check with the reliable
-#      status==200 + animes-exists check from the original working version.
-#      Also kept: new message flow (send new msg, don't edit), anime_map
-#      keyed by anime['id'] directly so pagination still works properly.
+# THE CORE FIX:
+#   1. Fetch only ONE API page per request — no sequential multi-fetch that
+#      times out for popular anime like Naruto.
+#   2. Buttons use numeric keys like "1_0", "1_1" as callback data instead
+#      of the raw anime ID string, so even very long IDs never exceed
+#      Telegram's 64-byte callback data limit.
+#   3. status==200 check (correct) instead of the broken success-field check.
 # -----------------------------------------------------------------------
-async def fetch_and_display_search(chat_id, context, page=1):
+async def fetch_and_display_search(chat_id, context, api_page=1):
     query_str = context.user_data.get('search_query')
-    url = f"{BASE_URL}/search?q={query_str}&page={page}"
 
     loading_msg = await context.bot.send_message(
         chat_id=chat_id,
@@ -128,9 +134,10 @@ async def fetch_and_display_search(chat_id, context, page=1):
         parse_mode='HTML'
     )
 
-    data = await fetch_api(url)
+    url = f"{BASE_URL}/search?q={query_str}&page={api_page}"
+    data = await fetch_api(url, retries=2)
 
-    # --- FIXED CHECK (matches old working version) ---
+    # Correct status check — API returns {"status": 200, "data": {...}}
     if not data or data.get('status') != 200 or not data.get('data', {}).get('animes'):
         await loading_msg.edit_text(
             "💔 <b>Aww, I couldn't find that!</b>\nTry a different name or check /start."
@@ -140,27 +147,31 @@ async def fetch_and_display_search(chat_id, context, page=1):
     animes = data['data']['animes']
     has_next = data['data'].get('hasNextPage', False)
 
-    # Keep anime_map keyed by anime id string for direct lookup
+    # Build short numeric keys so callback data stays safely under 64 bytes.
+    # e.g. key = "3_7" for page 3, index 7 → callback "id|3_7" = 7 bytes ✓
     if 'anime_map' not in context.user_data:
         context.user_data['anime_map'] = {}
 
     keyboard = []
-    for anime in animes:
-        a_id = anime['id']
-        context.user_data['anime_map'][a_id] = a_id
-        keyboard.append([InlineKeyboardButton(f"🎬 {anime['name']}", callback_data=f"id|{a_id}")])
+    for i, anime in enumerate(animes):
+        key = f"{api_page}_{i}"
+        context.user_data['anime_map'][key] = anime['id']
+        keyboard.append([InlineKeyboardButton(
+            f"🎬 {anime['name']}",
+            callback_data=f"id|{key}"
+        )])
 
     nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page|{page-1}"))
+    if api_page > 1:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page|{api_page-1}"))
     if has_next:
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page|{page+1}"))
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page|{api_page+1}"))
     if nav_buttons:
         keyboard.append(nav_buttons)
 
     text = (
         f"🔎 <b>Results for:</b> <i>{query_str}</i>\n"
-        f"📄 Page: <b>{page}</b>\n\n"
+        f"📄 Page: <b>{api_page}</b>\n\n"
         f"✨ <i>Pick one below to see more!</i>"
     )
 
@@ -179,14 +190,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer("Processing... ✨")
 
     try:
-        # --- PAGINATION ---
+        # --- SEARCH PAGINATION (one API call per page, instant) ---
         if data.startswith("page|"):
-            page = int(data.split("|")[1])
-            await fetch_and_display_search(chat_id, context, page)
+            api_page = int(data.split("|")[1])
+            await fetch_and_display_search(chat_id, context, api_page=api_page)
 
         # --- ANIME DETAILS ---
         elif data.startswith("id|"):
-            anime_id = data.split("|")[1]
+            key = data.split("|")[1]
+            anime_id = context.user_data.get('anime_map', {}).get(key)
+
+            if not anime_id:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ <b>Session expired!</b> Please /start and search again.",
+                    parse_mode='HTML'
+                )
+                return
+
             loading = await context.bot.send_message(
                 chat_id=chat_id,
                 text="🎀 <b>Fetching cute details...</b>",
@@ -194,7 +215,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             api_data = await fetch_api(f"{BASE_URL}/anime/{anime_id}")
 
-            # FIXED CHECK: use status==200 OR presence of 'data' key (API can vary)
             if api_data and (api_data.get('status') == 200 or api_data.get('data')):
                 info = api_data['data']['anime']['info']
                 stats = info.get('stats', {})
@@ -225,11 +245,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await loading.edit_text("❌ <b>Could not fetch anime details.</b> Please try again.")
 
-        # -------------------------------------------------------------------
-        # FIX: Episode list — same reliable status/data check as old version,
-        #      but keeps new version's short_key trick to avoid callback
-        #      data length limits, and sends as a new message (not edit).
-        # -------------------------------------------------------------------
+        # --- EPISODE LIST ---
         elif data.startswith("eps|"):
             _, anime_id, page = data.split("|")
             page = int(page)
@@ -241,7 +257,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             api_data = await fetch_api(f"{BASE_URL}/anime/{anime_id}/episodes")
 
-            # FIXED CHECK: use status==200 OR presence of 'data' key
             if api_data and (api_data.get('status') == 200 or api_data.get('data')):
                 episodes = api_data['data'].get('episodes', [])
 
@@ -253,21 +268,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data['ep_map'] = {}
 
                 chunks = list(chunk_list(episodes, 40))
-
-                # Guard against out-of-range page
-                if page > len(chunks):
-                    page = len(chunks)
-                if page < 1:
-                    page = 1
-
+                page = max(1, min(page, len(chunks)))
                 current_chunk = chunks[page - 1]
-                start_index = (page - 1) * 40
 
                 keyboard = []
                 row = []
-                for i, ep in enumerate(current_chunk):
+                for ep in current_chunk:
                     ep_id = ep['episodeId']
-                    # Short key to stay within Telegram's 64-byte callback data limit
+                    # Short key to stay within Telegram's callback data limit
                     short_key = ep_id.split('=')[-1]
                     context.user_data['ep_map'][short_key] = ep_id
                     row.append(InlineKeyboardButton(f"Ep {ep['number']}", callback_data=f"srv|{short_key}"))
@@ -363,7 +371,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             url = f"{BASE_URL}/episode/sources?animeEpisodeId={ep_id}&server={s_name}&category={cat}"
-            # RETRY 3 TIMES for reliability (kept from new version)
             api_data = await fetch_api(url, retries=3)
 
             if api_data and (api_data.get('status') == 200 or api_data.get('data')):
@@ -427,7 +434,7 @@ def main():
         entry_points=[CallbackQueryHandler(start_search, pattern="^start_search$")],
         states={WAITING_FOR_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search)]},
         fallbacks=[CommandHandler("start", start)],
-        allow_reentry=True  # Critical for allowing new searches
+        allow_reentry=True
     )
 
     application.add_handler(CommandHandler("start", start))
