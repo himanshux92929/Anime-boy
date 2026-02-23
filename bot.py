@@ -44,19 +44,20 @@ WAITING_FOR_SEARCH = 1
 
 # --- HELPER FUNCTIONS ---
 async def fetch_api(url, retries=1):
-    """Fetch API with optional retry logic."""
+    """Fetch API with optional retry logic for high reliability."""
     connector = ProxyConnector.from_url(PROXY_URL)
     for attempt in range(retries):
         async with aiohttp.ClientSession(connector=connector) as session:
             try:
-                async with session.get(url, timeout=20) as response:
+                async with session.get(url, timeout=25) as response:
                     if response.status == 200:
-                        return await response.json()
+                        data = await response.json()
+                        return data
                     logger.error(f"Attempt {attempt+1}: API Error {response.status}")
             except Exception as e:
                 logger.error(f"Attempt {attempt+1}: Fetch Error {e}")
         if attempt < retries - 1:
-            await asyncio.sleep(2) # Wait before retrying
+            await asyncio.sleep(1.5) 
     return None
 
 def chunk_list(lst, n):
@@ -65,6 +66,9 @@ def chunk_list(lst, n):
 
 # --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Clear conversation state if any
+    context.user_data.clear() 
+    
     user_name = update.effective_user.first_name
     text = (
         f"🌸 <b>Kon'nichiwa, {user_name}-chan!</b> 🌸\n\n"
@@ -78,6 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='HTML', reply_markup=reply_markup)
+    return ConversationHandler.END
 
 async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -95,7 +100,11 @@ async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await context.bot.send_message(chat_id=query.message.chat_id, text="✏️ <b>Please type the name of the Anime:</b>\n(Example: <i>Naruto</i> or <i>Solo Leveling</i>)", parse_mode='HTML')
+    await context.bot.send_message(
+        chat_id=query.message.chat_id, 
+        text="✏️ <b>Please type the name of the Anime:</b>\n(Example: <i>Naruto</i> or <i>Solo Leveling</i>)", 
+        parse_mode='HTML'
+    )
     return WAITING_FOR_SEARCH
 
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,53 +117,54 @@ async def fetch_and_display_search(chat_id, context, page=1):
     query_str = context.user_data.get('search_query')
     url = f"{BASE_URL}/search?q={query_str}&page={page}"
     
-    loading_msg = await context.bot.send_message(chat_id=chat_id, text="🍭 <b>Searching for your favorites...</b>", parse_mode='HTML')
+    loading_msg = await context.bot.send_message(chat_id=chat_id, text="🍭 <b>Searching the database for you...</b>", parse_mode='HTML')
 
     data = await fetch_api(url)
     
-    if not data or data.get('status') != 200 or not data.get('data', {}).get('animes'):
-        await loading_msg.edit_text("💔 <b>Aww, I couldn't find that!</b>\nTry a different spelling or check /start.")
+    if not data or not data.get('success', True) or not data.get('data', {}).get('animes'):
+        await loading_msg.edit_text("💔 <b>Aww, I couldn't find that!</b>\nTry a different name or check /start.")
         return
 
     animes = data['data']['animes']
     has_next = data['data'].get('hasNextPage', False)
     
-    # Store IDs using names to keep them persistent across messages
     if 'anime_map' not in context.user_data: context.user_data['anime_map'] = {}
     
     keyboard = []
     for anime in animes:
-        # We use short hash or part of ID for callback to avoid 64-byte limit
-        short_id = anime['id']
-        context.user_data['anime_map'][short_id] = anime['id']
-        keyboard.append([InlineKeyboardButton(f"🎬 {anime['name']}", callback_data=f"id|{short_id}")])
+        a_id = anime['id']
+        context.user_data['anime_map'][a_id] = a_id
+        keyboard.append([InlineKeyboardButton(f"🎬 {anime['name']}", callback_data=f"id|{a_id}")])
         
     nav_buttons = []
     if page > 1: nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page|{page-1}"))
     if has_next: nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page|{page+1}"))
     if nav_buttons: keyboard.append(nav_buttons)
 
-    text = f"🔎 <b>Results for:</b> <i>{query_str}</i>\n📄 Page: <b>{page}</b>\n\n✨ <i>Pick one to see details!</i>"
-    await loading_msg.delete() # Remove the "Searching..." message
+    text = f"🔎 <b>Results for:</b> <i>{query_str}</i>\n📄 Page: <b>{page}</b>\n\n✨ <i>Pick one below to see more!</i>"
+    
+    await loading_msg.delete() 
     await context.bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     chat_id = query.message.chat_id
-    await query.answer("Working on it... ✨")
+    await query.answer("Processing... ✨")
 
     try:
+        # PAGINATION
         if data.startswith("page|"):
             page = int(data.split("|")[1])
             await fetch_and_display_search(chat_id, context, page)
 
+        # ANIME DETAILS
         elif data.startswith("id|"):
             anime_id = data.split("|")[1]
             loading = await context.bot.send_message(chat_id=chat_id, text="🎀 <b>Fetching cute details...</b>", parse_mode='HTML')
             api_data = await fetch_api(f"{BASE_URL}/anime/{anime_id}")
 
-            if api_data and api_data.get('status') == 200:
+            if api_data and api_data.get('data'):
                 info = api_data['data']['anime']['info']
                 stats = info.get('stats', {})
                 caption = (
@@ -171,13 +181,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
+        # EPISODE LIST
         elif data.startswith("eps|"):
             _, anime_id, page = data.split("|")
             page = int(page)
-            loading = await context.bot.send_message(chat_id=chat_id, text="🌈 <b>Getting the episode list for you...</b>", parse_mode='HTML')
+            loading = await context.bot.send_message(chat_id=chat_id, text="🌈 <b>Getting the episodes...</b>", parse_mode='HTML')
 
             api_data = await fetch_api(f"{BASE_URL}/anime/{anime_id}/episodes")
-            if api_data and api_data.get('status') == 200:
+            if api_data and api_data.get('data'):
                 episodes = api_data['data'].get('episodes', [])
                 if 'ep_map' not in context.user_data: context.user_data['ep_map'] = {}
                 
@@ -187,10 +198,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard = []
                 row = []
                 for ep in current_chunk:
-                    # Map the episodeId to a key to avoid long callback data
-                    ep_key = ep['episodeId'].split('?ep=')[-1]
-                    context.user_data['ep_map'][ep_key] = ep['episodeId']
-                    row.append(InlineKeyboardButton(f"Ep {ep['number']}", callback_data=f"srv|{ep_key}"))
+                    ep_id = ep['episodeId']
+                    # We store the ID in map because callback data has a character limit
+                    short_key = ep_id.split('=')[-1] 
+                    context.user_data['ep_map'][short_key] = ep_id
+                    row.append(InlineKeyboardButton(f"Ep {ep['number']}", callback_data=f"srv|{short_key}"))
                     if len(row) == 4:
                         keyboard.append(row)
                         row = []
@@ -202,74 +214,76 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if nav: keyboard.append(nav)
                 
                 await loading.delete()
-                await context.bot.send_message(chat_id=chat_id, text="📺 <b>Which episode will we watch?</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+                await context.bot.send_message(chat_id=chat_id, text="📺 <b>Select an Episode:</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
+        # SERVER SELECTION
         elif data.startswith("srv|"):
-            ep_key = data.split("|")[1]
-            ep_id = context.user_data.get('ep_map', {}).get(ep_key)
+            short_key = data.split("|")[1]
+            ep_id = context.user_data.get('ep_map', {}).get(short_key)
             
-            loading = await context.bot.send_message(chat_id=chat_id, text="⚡ <b>Looking for the best servers...</b>", parse_mode='HTML')
+            loading = await context.bot.send_message(chat_id=chat_id, text="⚡ <b>Finding servers...</b>", parse_mode='HTML')
             api_data = await fetch_api(f"{BASE_URL}/episode/servers?animeEpisodeId={ep_id}")
             
-            if api_data and api_data.get('status') == 200:
+            if api_data and api_data.get('data'):
                 servers = api_data['data']
                 keyboard = []
                 for cat in ['sub', 'dub']:
                     for s in servers.get(cat, []):
                         icon = "🟢" if cat == "sub" else "🔵"
-                        keyboard.append([InlineKeyboardButton(f"{icon} {cat.upper()}: {s['serverName']}", callback_data=f"src|{ep_key}|{s['serverName']}|{cat}")])
+                        keyboard.append([InlineKeyboardButton(f"{icon} {cat.upper()}: {s['serverName']}", callback_data=f"src|{short_key}|{s['serverName']}|{cat}")])
                 
                 await loading.delete()
-                await context.bot.send_message(chat_id=chat_id, text="🎛️ <b>Select your preferred Quality/Server:</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+                if not keyboard:
+                    await context.bot.send_message(chat_id=chat_id, text="❌ <b>No servers found for this episode!</b>")
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text="🎛️ <b>Select your Server:</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
+        # FINAL SOURCE LINK
         elif data.startswith("src|"):
-            _, ep_key, s_name, cat = data.split("|")
-            ep_id = context.user_data.get('ep_map', {}).get(ep_key)
+            _, short_key, s_name, cat = data.split("|")
+            ep_id = context.user_data.get('ep_map', {}).get(short_key)
             
-            loading = await context.bot.send_message(chat_id=chat_id, text="🚀 <b>Generating your magic link...</b>", parse_mode='HTML')
+            loading = await context.bot.send_message(chat_id=chat_id, text="🚀 <b>Generating High-Speed Link...</b>", parse_mode='HTML')
             
             url = f"{BASE_URL}/episode/sources?animeEpisodeId={ep_id}&server={s_name}&category={cat}"
-            # RETRY LOGIC: Try 3 times
+            # RETRY 3 TIMES IF IT FAILS
             api_data = await fetch_api(url, retries=3)
             
-            if api_data and api_data.get('status') == 200:
+            if api_data and api_data.get('data'):
                 res = api_data['data']
                 m3u8 = next((s['url'] for s in res.get('sources', []) if s.get('isM3U8')), None)
                 
                 if not m3u8:
-                    await loading.edit_text("❌ <b>Oopsie!</b> Link generation failed. Please try a different server!")
+                    await loading.edit_text("❌ <b>Generation Failed!</b> Link not found. Try another server.")
                     return
 
-                subs_text = "".join([f"▪️ <a href='{track['url']}'>{track['lang'].upper()}</a>\n" for track in res.get('tracks', []) if track.get('lang') != 'thumbnails'])
-                referer = res.get('headers', {}).get('Referer', 'None')
+                subs = "".join([f"▪️ <a href='{t['url']}'>{t['lang'].upper()}</a>\n" for t in res.get('tracks', []) if t.get('lang') != 'thumbnails'])
+                ref = res.get('headers', {}).get('Referer', 'Not Always Needed')
                 
                 final_text = (
-                    f"✅ <b>Link Ready to Sparkle!</b>\n"
+                    f"✅ <b>Link Ready!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"🖥️ <b>Server:</b> {s_name} ({cat.upper()})\n\n"
-                    f"🔗 <b>Stream URL (M3U8):</b>\n<code>{m3u8}</code>\n\n"
-                    f"🌐 <b>Referer:</b> (Use only if it doesn't play!)\n<code>{referer}</code>\n\n"
-                    f"📝 <b>Available Subtitles:</b>\n{subs_text if subs_text else '<i>None Found</i>'}\n"
+                    f"🔗 <b>Stream URL:</b>\n<code>{m3u8}</code>\n\n"
+                    f"🌐 <b>Referer:</b> (Only use if player fails)\n<code>{ref}</code>\n\n"
+                    f"📝 <b>Subtitles:</b>\n{subs if subs else '<i>None</i>'}\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🍿 <b>Instructions:</b>\n"
-                    f"1. Copy the URL.\n"
-                    f"2. Open <b>VLC</b> or <b>KMPlayer</b>.\n"
-                    f"3. Paste URL. If it fails, add the <b>Referer</b> in settings!"
+                    f"🍿 <b>How to play:</b> Paste the URL into <b>VLC</b> or <b>KMPlayer</b>. If it doesn't play, set the <b>Referer</b> in your player settings!"
                 )
                 await loading.delete()
                 await context.bot.send_message(chat_id=chat_id, text=final_text, parse_mode='HTML', disable_web_page_preview=True)
             else:
                 await loading.edit_text(
-                    f"⚠️ <b>I'm so sorry!</b> I tried 3 times but the link wouldn't generate.\n\n"
-                    f"🕙 Please <b>wait 2 minutes</b> and try again!\n"
-                    f"🆘 If it keeps failing, tell {DEV_CONTACT}!"
+                    f"⚠️ <b>Generation failed after 3 tries.</b>\n\n"
+                    f"🕙 Please <b>wait 2 minutes</b> before trying this episode again.\n"
+                    f"🆘 If this persists, contact {DEV_CONTACT}!"
                 )
 
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=f"🌸 <b>Something went a bit wrong!</b>\nPlease try again or contact {DEV_CONTACT}.", parse_mode='HTML')
+        logger.error(f"Logic Error: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="🌸 <b>Something went wrong!</b> Please try /start to reset.", parse_mode='HTML')
 
-# --- MAIN INITIALIZATION ---
+# --- MAIN ---
 def main():
     t_request = HTTPXRequest(proxy=PROXY_URL, connect_timeout=30.0, read_timeout=30.0)
     application = Application.builder().token(BOT_TOKEN).request(t_request).get_updates_request(t_request).build()
@@ -277,7 +291,8 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_search, pattern="^start_search$")],
         states={WAITING_FOR_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search)]},
-        fallbacks=[CommandHandler("start", start)]
+        fallbacks=[CommandHandler("start", start)],
+        allow_reentry=True # Critical for allowing new searches
     )
 
     application.add_handler(CommandHandler("start", start))
@@ -285,7 +300,7 @@ def main():
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("The cutie bot is alive!")
+    logger.info("Bot is spinning up... 🚀")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
