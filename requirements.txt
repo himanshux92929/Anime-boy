@@ -1,0 +1,5 @@
+python-telegram-bot
+flask
+aiohttp
+aiohttp-socks
+httpx[socks]
