@@ -13,9 +13,10 @@ import os
 app = Flask(__name__)
 
 def run_web_server():
-    # Port 7860 is the magic number for Hugging Face
-    app.run(host='0.0.0.0', port=7860)
-
+    # Use the port Render gives us, or default to 10000
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+    
 # 2. Start the web server in the background
 threading.Thread(target=run_web_server, daemon=True).start()
 
