@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://aniwatch-api-six-theta.vercel.app/api/v2/hianime"
 PROXY_URL = "socks5://zqxtpjjc:cknwbdszk5ux@31.59.20.176:6754"
 BOT_TOKEN = "8271227515:AAGZK8k7bARC7VmTkE6UUfOPyg5ZvjGxQ-k"
-DEV_CONTACT = "@YourUsername" # Replace with your telegram username
+DEV_CONTACT = "@smarterz_bot" # Replace with your telegram username
 
 WAITING_FOR_SEARCH = 1
 
