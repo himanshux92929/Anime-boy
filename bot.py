@@ -178,18 +178,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- FETCH EPISODES ---
+        # --- FETCH EPISODES ---
     elif data.startswith("eps|"):
         parts = data.split("|")
         idx, page = parts[1], int(parts[2])
         anime_id = context.user_data.get('anime_map', {}).get(idx)
         
+        if not anime_id:
+            await context.bot.send_message(chat_id=chat_id, text="❌ Session expired. Please search again. /start")
+            return
+            
         url = f"{BASE_URL}/anime/{anime_id}/episodes"
         api_data = await fetch_api(url)
         
         if api_data and api_data.get('status') == 200:
-            episodes = api_data['data']['episodes']
+            episodes = api_data['data'].get('episodes', [])
             
-            # Create a map for episodes to avoid the 64-byte limit on the server step
+            if not episodes:
+                await context.bot.send_message(chat_id=chat_id, text="❌ No episodes found for this anime.")
+                return
+
+            # Create a map for episodes to avoid the 64-byte limit
             context.user_data['ep_map'] = {str(i): ep['episodeId'] for i, ep in enumerate(episodes)}
             
             chunks = list(chunk_list(episodes, 40))
@@ -198,14 +207,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
                 
             current_chunk = chunks[page-1]
-            # Calculate the real index for mapping
             start_index = (page - 1) * 40
             
             keyboard = []
             row = []
             for i, ep in enumerate(current_chunk):
                 real_idx = start_index + i
-                row.append(InlineKeyboardButton(f"Ep {ep['number']}", callback_data=f"srv|{real_idx}"))
+                # Make sure to handle missing 'number' gracefully
+                ep_num = ep.get('number', real_idx + 1) 
+                row.append(InlineKeyboardButton(f"Ep {ep_num}", callback_data=f"srv|{real_idx}"))
                 if len(row) == 4:
                     keyboard.append(row)
                     row = []
@@ -216,11 +226,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if page < len(chunks): nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"eps|{idx}|{page+1}"))
             if nav: keyboard.append(nav)
             
-            # Edit the message if it's already an episode list, otherwise send new
-            if "Select Episode" in query.message.text:
-                await query.message.edit_text(text="📺 <b>Select Episode:</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+            # FIX: Safely check text content so it doesn't crash on photo captions
+            msg_text = query.message.text or query.message.caption or ""
+            
+            if "Select Episode" in msg_text:
+                await query.message.edit_text(
+                    text="📺 <b>Select Episode:</b>", 
+                    parse_mode='HTML', 
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
             else:
-                await context.bot.send_message(chat_id=chat_id, text="📺 <b>Select Episode:</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text="📺 <b>Select Episode:</b>", 
+                    parse_mode='HTML', 
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="❌ Failed to fetch episodes from the API.")
+
 
     # --- SELECT SERVER ---
     elif data.startswith("srv|"):
