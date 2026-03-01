@@ -455,19 +455,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     extra_info = extra_info + "\n"
 
                 final_text = (
-                    f"✅ <b>Link Ready!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🖥️ <b>Server:</b> {s_name} ({cat.upper()})\n\n"
-                    f"{extra_info}"
-                    f"🔗 <b>Stream URL:</b>\n<code>{m3u8}</code>\n\n"
-                    f"🌐 <b>Referer:</b> (Only use if player fails)\n<code>{ref}</code>\n\n"
-                    f"📝 <b>Subtitles:</b>\n{subs_text if subs_text else '<i>None</i>'}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🍿 <b>How to play:</b> Paste the URL into <b>VLC</b> or <b>KMPlayer</b>. "
-                    f"If it doesn't play, set the <b>Referer</b> in your player settings!\n\n"
+                    f"✅ <b>Link Ready!</b>\n" 
+                    f"🍿 <b>How to play:</b> Click the <b>Watch Now</b> Button below and then Click the Play icon. "
+                    f"For Best Experience, Open it in Chrome or Safari by Clicking Open in Browser Instead.\n\n"
                     f"⚠️ <i>If the current server doesn't work, please go back and try another server.\n"
                     f"For any issues, report to the admin: {DEV_CONTACT}</i>"
+                    
                 )
+
+                    #f"━━━━━━━━━━━━━━━━━━━━\n"
+                   # f"🖥️ <b>Server:</b> {s_name} ({cat.upper()})\n\n"
+                  #  f"{extra_info}"
+                    #f"🔗 <b>Stream URL:</b>\n<code>{m3u8}</code>\n\n"
+                   # f"🌐 <b>Referer:</b> (Only use if player fails)\n<code>{ref}</code>\n\n"
+                  #  f"📝 <b>Subtitles:</b>\n{subs_text if subs_text else '<i>None</i>'}\n"
+                   # f"━━━━━━━━━━━━━━━━━━━━\n"
 
                 keyboard = [[InlineKeyboardButton("🎬 Watch Now", url=player_url)]]
 
