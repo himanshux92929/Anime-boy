@@ -3,6 +3,10 @@ import aiohttp
 import logging
 import asyncio
 import threading
+import json
+import base64
+import secrets
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import Flask
 from aiohttp_socks import ProxyConnector
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -41,6 +45,20 @@ BOT_TOKEN = "8271227515:AAGZK8k7bARC7VmTkE6UUfOPyg5ZvjGxQ-k"
 DEV_CONTACT = "@smarterz_bot"
 
 WAITING_FOR_SEARCH = 1
+
+# --- SHARED ENCRYPTION KEY (must match generator.html) ---
+KEY_HEX = 'a3f8c2e1b4d7f6a0c9e2b5d8f1a4c7e0b3d6f9a2c5e8b1d4f7a0c3e6b9d2f5a8'
+
+def generate_token(cfg: dict) -> str:
+    """Encrypt config dict using AES-GCM, matching the generator.html logic."""
+    key_bytes = bytes.fromhex(KEY_HEX)
+    iv = secrets.token_bytes(12)
+    aesgcm = AESGCM(key_bytes)
+    plaintext = json.dumps(cfg, separators=(',', ':')).encode('utf-8')
+    ciphertext = aesgcm.encrypt(iv, plaintext, None)
+    combined = iv + ciphertext
+    token = base64.urlsafe_b64encode(combined).rstrip(b'=').decode('ascii')
+    return token
 
 # --- HELPER FUNCTIONS ---
 async def fetch_api(url, retries=1):
@@ -384,30 +402,82 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                subs = "".join([
+                # --- Build token config ---
+                cfg = {"url": m3u8}
+
+                # Intro segment
+                intro = res.get('intro', {})
+                if intro.get('start') is not None and intro.get('end') is not None:
+                    intro_start = intro['start']
+                    intro_end = intro['end']
+                    if intro_end > intro_start:
+                        cfg['introStart'] = intro_start
+                        cfg['introEnd'] = intro_end
+
+                # Outro segment
+                outro = res.get('outro', {})
+                if outro.get('start') is not None and outro.get('end') is not None:
+                    outro_start = outro['start']
+                    outro_end = outro['end']
+                    if outro_end > outro_start:
+                        cfg['outroStart'] = outro_start
+                        cfg['outroEnd'] = outro_end
+
+                # Subtitle tracks
+                sub_urls = []
+                sub_names = []
+                for t in res.get('tracks', []):
+                    if t.get('lang') and t.get('lang') != 'thumbnails' and t.get('url'):
+                        sub_urls.append(t['url'])
+                        sub_names.append(t['lang'].upper())
+                if sub_urls:
+                    cfg['subs'] = sub_urls
+                    cfg['names'] = sub_names
+
+                # Generate encrypted token
+                token = generate_token(cfg)
+                player_url = f"https://animerz.vercel.app?token={token}"
+
+                subs_text = "".join([
                     f"▪️ <a href='{t['url']}'>{t['lang'].upper()}</a>\n"
                     for t in res.get('tracks', [])
                     if t.get('lang') != 'thumbnails'
                 ])
                 ref = res.get('headers', {}).get('Referer', 'Not Always Needed')
 
+                # Build intro/outro info lines
+                extra_info = ""
+                if 'introStart' in cfg:
+                    extra_info += f"⏩ <b>Intro:</b> {cfg['introStart']}s → {cfg['introEnd']}s\n"
+                if 'outroStart' in cfg:
+                    extra_info += f"⏭️ <b>Outro:</b> {cfg['outroStart']}s → {cfg['outroEnd']}s\n"
+                if extra_info:
+                    extra_info = extra_info + "\n"
+
                 final_text = (
                     f"✅ <b>Link Ready!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"🖥️ <b>Server:</b> {s_name} ({cat.upper()})\n\n"
+                    f"{extra_info}"
                     f"🔗 <b>Stream URL:</b>\n<code>{m3u8}</code>\n\n"
                     f"🌐 <b>Referer:</b> (Only use if player fails)\n<code>{ref}</code>\n\n"
-                    f"📝 <b>Subtitles:</b>\n{subs if subs else '<i>None</i>'}\n"
+                    f"📝 <b>Subtitles:</b>\n{subs_text if subs_text else '<i>None</i>'}\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"🍿 <b>How to play:</b> Paste the URL into <b>VLC</b> or <b>KMPlayer</b>. "
-                    f"If it doesn't play, set the <b>Referer</b> in your player settings!"
+                    f"If it doesn't play, set the <b>Referer</b> in your player settings!\n\n"
+                    f"⚠️ <i>If the current server doesn't work, please go back and try another server.\n"
+                    f"For any issues, report to the admin: {DEV_CONTACT}</i>"
                 )
+
+                keyboard = [[InlineKeyboardButton("🎬 Watch Now", url=player_url)]]
+
                 await loading.delete()
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=final_text,
                     parse_mode='HTML',
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             else:
                 await loading.edit_text(
