@@ -455,9 +455,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     extra_info = extra_info + "\n"
 
                 final_text = (
-                    f"✅ <b>Link Ready!</b>\n" 
-                    f"🍿 <b>How to play:</b> Click the <b>Watch Now</b> Button below and then Click the Play icon. "
-                    f"For Best Experience, Open it in Chrome or Safari by Clicking Open in Browser Instead.\n\n"
+                    f"✅ <b>Link Ready!</b>\n\n" 
+                    f"🍿 <b>How to play:</b> Click the <b>Watch Now</b> Button below and then Click the Play icon. \n\n "
+                    f"<b>For Best Experience</b>, Open it in <b>Chrome or Safari</b> by Clicking Open in Browser.\n\n"
                     f"⚠️ <i>If the current server doesn't work, please go back and try another server.\n"
                     f"For any issues, report to the admin: {DEV_CONTACT}</i>"
                     
