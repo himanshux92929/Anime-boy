@@ -3,3 +3,4 @@ flask
 aiohttp
 aiohttp-socks
 httpx[socks]
+cryptography
